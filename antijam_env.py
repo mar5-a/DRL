@@ -41,6 +41,8 @@ class AntiJammingEnv(gym.Env):
         self.power_noise  = 3.162e-16      # NEW (kTB*N; matches your comment)
         self.alpha_k_user   = 9.1e-12        # NEW (Rayleigh scale for user)
         self.alpha_k_jammer = 1.15e-12       # NEW (Rayleigh scale for jammer)
+        # self.alpha_k_jammer = 9.1e-12       # NEW (Rayleigh scale for jammer)
+
         self._gain_user   = np.zeros(self.num_freqs)   # NEW (slot user gains)
         self._gain_jammer = np.zeros(self.num_freqs)   # NEW (slot jammer gains)
 
@@ -100,8 +102,8 @@ class AntiJammingEnv(gym.Env):
         s = np.clip(s, self.power_noise * 0.5, None)
 
         # FIXED scaling (stationary across steps)
-        # ~95% jammed values lie within headroom when gains are exponential
-        headroom = self.jammer_power * self.alpha_k_jammer * 3.0
+        # ~95% jammed values lie within headroom when gains are exponential. NOW rician adjusted from 3 to 2.3
+        headroom = self.jammer_power * self.alpha_k_jammer * 2.3
         denom = max(headroom, 1e-30)
         s_normalized = (s - self.power_noise) / denom
         s_normalized = np.clip(s_normalized, 0.0, 1.0)
@@ -179,8 +181,20 @@ class AntiJammingEnv(gym.Env):
         # freq, power = map(int, action)  #power here is the index of the power level
         power = self.power_levels[power]
 
-        self._gain_user   = self.alpha_k_user   * -1 * np.log(self.rng.random(self.num_freqs))  # NEW
-        self._gain_jammer = self.alpha_k_jammer * -1 * np.log(self.rng.random(self.num_freqs))  # NEW
+        # rician distribution sampling for gains
+        K_dB  = 10.0
+        K     = 10 ** (K_dB / 10)
+        sigma = 1.0 / np.sqrt(2 * (K + 1))
+        los   = np.sqrt(K / (K + 1))    # line of sight component
+        n_re  = self.rng.normal(scale=sigma, size=self.num_freqs)   # real part of the complex normal distribution
+        n_im  = self.rng.normal(scale=sigma, size=self.num_freqs)   # imaginary part of the complex normal distribution
+        power_sample = (los + n_re)**2 + n_im**2          # |h|², 𝔼{power}=1, power is square of amplitude, mean will be 1
+        self._gain_user   = self.alpha_k_user   * power_sample
+        self._gain_jammer = self.alpha_k_jammer * power_sample.copy()
+
+        
+        # self._gain_user   = self.alpha_k_user   * -1 * np.log(self.rng.random(self.num_freqs))  # NEW
+        # self._gain_jammer = self.alpha_k_jammer * -1 * np.log(self.rng.random(self.num_freqs))  # NEW
 
         #for simplicity and faithfulness to old code
         # alpha_k_user   = self.alpha_k_user   # from SNR_clean target (≈12 dB)
@@ -205,7 +219,7 @@ class AntiJammingEnv(gym.Env):
         sinr = (power*gain_vector_user[freq]) / (powerNoise+jamming_power+1e-30)
 
         #crc calculation
-        beta_th = 10**(6/10)  # SINR threshold for successful CRC, it is taken from GPT as a standard practice with QPSK modulation, but can be manipulated between 6-10 dbm , this shows 8dbm
+        beta_th = 10**(8/10)  # SINR threshold for successful CRC, it is taken from GPT as a standard practice with QPSK modulation, but can be manipulated between 6-10 dbm , this shows 8dbm
         # right before crc_success line
         den = powerNoise + (self.jammer_power * gain_vector_jammer[freq] if jammed else 0.0)
         sinr = (power * gain_vector_user[freq]) / (den + 1e-30)
@@ -219,12 +233,13 @@ class AntiJammingEnv(gym.Env):
             switching_penalty = 1.0
         
     
-        lambd = 600
-        # subBandWidth = 25e3 # 25 kHz , taking from the paper that the base is 20 kHz and some roll-off margin
-        # epsilon = 1e4 # taken from GPT, suggested to make the affect of the power in the same scale with swithcing and etc.. 
-        alpha = 1.2# weight for switching penalty from the paper Table 1
-        # reward =  crc_success * (subBandWidth * np.log2(1 + sinr)) / (epsilon * power) - alpha * switching_penalty
-        reward = crc_success * ((np.log2(1 + sinr))) - lambd * power - alpha * switching_penalty
+        # lambd = 600
+        subBandWidth = 25e3 # 25 kHz , taking from the paper that the base is 20 kHz and some roll-off margin
+        epsilon = 1.5e8 # taken from GPT, suggested to make the affect of the power in the same scale with swithcing and etc.. 
+        alpha = 0.05 #weight of the switching penalty. modified from 1.2 to 0.05 
+        reward =  crc_success * ((subBandWidth * np.log2(1 + sinr)) / (epsilon * power) - alpha * switching_penalty) 
+        # - 0.5 * (1-crc_success)
+        # reward = crc_success * (subBandWidth * ((np.log2(1 + sinr)))/power) - alpha * switching_penalty
 
 
 
