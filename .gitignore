@@ -15,7 +15,9 @@ DRL copy.pdf
 antijam_env.py
 
 
+
 results.md
 
+/runs
 /artifacts
-runs/
+.gitignore
