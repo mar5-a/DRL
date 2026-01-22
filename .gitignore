@@ -21,3 +21,7 @@ results.md
 /runs
 /artifacts
 .gitignore
+
+/dual_dqn_*
+/slurm
+/hpc
